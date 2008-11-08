@@ -11,7 +11,7 @@ WriteMakefile(
     LICENSE   => 'perl',
     PREREQ_PM => {
         'Net::Amazon::S3' => '0.46',
-        'Mojo'            => '0.8008',
+        'Mojo'            => '0.8009',
     }
 );
 
