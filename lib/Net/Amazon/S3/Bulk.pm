@@ -1,5 +1,7 @@
 package Net::Amazon::S3::Bulk;
 use Moose;
+use Digest::MD5 qw(md5 md5_hex);
+use Digest::MD5::File qw(file_md5 file_md5_hex);
 use MIME::Base64 qw(encode_base64);
 use Mojo;
 use Mojo::Client;
@@ -9,7 +11,52 @@ use Net::Amazon::S3::Client;
 our $VERSION = '0.32';
 my $AMAZON_HEADER_PREFIX = 'x-amz-';
 
-sub upload_objects {
+sub upload_files {
+    my ( $self, $files ) = @_;
+
+    my $client = Mojo::Client->new;
+    $client->continue_timeout(5);
+    $client->keep_alive_timeout(15);
+    $client->select_timeout(5);
+
+    my @transactions;
+    foreach my $file (@$files) {
+        my $filename     = $file->{filename};
+        my $object       = $file->{object};
+        my $http_request = Net::Amazon::S3::Request::PutObject->new(
+            s3        => $object->client->s3,
+            bucket    => $object->bucket->name,
+            key       => $object->key,
+            value     => '',
+            acl_short => 'public-read',
+        )->http_request;
+        warn $http_request->as_string;
+
+        my $req = $self->_request( $object, $http_request );
+        warn $req;
+
+        my $file = Mojo::File->new;
+        $file->path($filename);
+        $req->content->file($file);
+        warn $req->content->file->path;
+
+        my $transaction = Mojo::Transaction->new;
+        $transaction->keep_alive(1);
+        $transaction->req($req);
+        $req->fix_headers;
+
+        my $md5_hex = $object->etag || file_md5_hex($filename);
+        my $md5 = pack( 'H*', $md5_hex );
+        my $md5_base64 = encode_base64($md5);
+        chomp $md5_base64;
+
+        $req->headers->header( 'Content-MD5', $md5_base64 );
+        warn $req->headers;
+
+        push @transactions, $transaction;
+    }
+
+    $client->process_all(@transactions);
 }
 
 sub download_files {
