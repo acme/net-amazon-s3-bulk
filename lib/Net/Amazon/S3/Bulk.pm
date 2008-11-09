@@ -2,6 +2,7 @@ package Net::Amazon::S3::Bulk;
 use Moose;
 use Digest::MD5 qw(md5 md5_hex);
 use Digest::MD5::File qw(file_md5 file_md5_hex);
+use File::stat;
 use MIME::Base64 qw(encode_base64);
 use Mojo;
 use Mojo::Client;
@@ -21,42 +22,61 @@ sub upload_files {
 
     my @transactions;
     foreach my $file (@$files) {
-        my $filename     = $file->{filename};
-        my $object       = $file->{object};
+        my $filename = $file->{filename};
+        my $object   = $file->{object};
+        my $md5_hex = $object->etag || file_md5_hex($filename);
+        my $size = $object->size;
+        unless ($size) {
+            my $stat = stat($filename) || confess("No $filename: $!");
+            $size = $stat->size;
+        }
+
+        my $md5 = pack( 'H*', $md5_hex );
+        my $md5_base64 = encode_base64($md5);
+        #warn "$md5_base64";
+        chomp $md5_base64;
+
+        my $conf = {
+            'Content-MD5'    => $md5_base64,
+            'Content-Length' => $size,
+            'Content-Type'   => $object->content_type,
+        };
+
         my $http_request = Net::Amazon::S3::Request::PutObject->new(
             s3        => $object->client->s3,
             bucket    => $object->bucket->name,
             key       => $object->key,
             value     => '',
             acl_short => 'public-read',
+            headers   => $conf,
         )->http_request;
-        warn $http_request->as_string;
+        #warn $http_request->as_string;
 
         my $req = $self->_request( $object, $http_request );
-        warn $req;
+        #warn $req;
 
         my $file = Mojo::File->new;
         $file->path($filename);
         $req->content->file($file);
-        warn $req->content->file->path;
+        #warn $req->content->file->path;
+        warn $req->headers;
 
         my $transaction = Mojo::Transaction->new;
         $transaction->keep_alive(1);
         $transaction->req($req);
-        $req->fix_headers;
 
-        my $md5_hex = $object->etag || file_md5_hex($filename);
-        my $md5 = pack( 'H*', $md5_hex );
-        my $md5_base64 = encode_base64($md5);
-        chomp $md5_base64;
+        #$req->fix_headers;
 
-        $req->headers->header( 'Content-MD5', $md5_base64 );
-        warn $req->headers;
+        #warn $req->headers;
+
+        #print $req->build_body;
 
         push @transactions, $transaction;
     }
 
     $client->process_all(@transactions);
+    warn $transactions[0]->res->code;
+    warn $transactions[0]->res->content->file->slurp;
 }
 
 sub download_files {
