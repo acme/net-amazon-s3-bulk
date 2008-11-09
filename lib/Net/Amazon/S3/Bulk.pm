@@ -12,6 +12,8 @@ use Net::Amazon::S3::Client;
 our $VERSION = '0.32';
 my $AMAZON_HEADER_PREFIX = 'x-amz-';
 
+has 'concurrency' => ( is => 'ro', isa => 'Int', default => 1 );
+
 sub upload_files {
     my ( $self, $files ) = @_;
 
@@ -24,8 +26,8 @@ sub upload_files {
     foreach my $file (@$files) {
         my $filename = $file->{filename};
         my $object   = $file->{object};
-        my $md5_hex = $object->etag || file_md5_hex($filename);
-        my $size = $object->size;
+        my $md5_hex  = $object->etag || file_md5_hex($filename);
+        my $size     = $object->size;
         unless ($size) {
             my $stat = stat($filename) || confess("No $filename: $!");
             $size = $stat->size;
@@ -33,6 +35,7 @@ sub upload_files {
 
         my $md5 = pack( 'H*', $md5_hex );
         my $md5_base64 = encode_base64($md5);
+
         #warn "$md5_base64";
         chomp $md5_base64;
 
@@ -50,14 +53,17 @@ sub upload_files {
             acl_short => 'public-read',
             headers   => $conf,
         )->http_request;
+
         #warn $http_request->as_string;
 
         my $req = $self->_request( $object, $http_request );
+
         #warn $req;
 
         my $file = Mojo::File->new;
         $file->path($filename);
         $req->content->file($file);
+
         #warn $req->content->file->path;
         warn $req->headers;
 
@@ -115,7 +121,39 @@ sub download_files {
 
         push @transactions, $transaction;
     }
-    $client->process_all(@transactions);
+
+    $self->_process_all( $client, @transactions );
+}
+
+sub _process_all {
+    my ( $self, $client, @transactions ) = @_;
+    my $concurrency = $self->concurrency;
+    my @finished;
+    my @progress;
+    while ( @progress < $concurrency && @transactions ) {
+        push @progress, shift @transactions;
+    }
+
+    warn "entering loop with " . scalar(@progress);
+
+    # Process until all transactions are finished
+    while (1) {
+        warn "beginning of loop with " . scalar(@progress);
+        my @done = $client->process(@progress);
+        @progress = ();
+        for my $tx (@done) {
+            $tx->is_state(qw/done error/)
+                ? push( @finished, $tx )
+                : push( @progress, $tx );
+        }
+        warn "have progressed  of loop with " . scalar(@progress);
+        while ( @progress < $concurrency && @transactions ) {
+        warn "added one more";
+            push @progress, shift @transactions;
+        }
+        last unless @progress;
+    }
+    return @finished;
 }
 
 sub _request {
